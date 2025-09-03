@@ -250,7 +250,7 @@ __global__ void lse_reduce_kernel_cuda(
 
 
 // // VEC_SIZE * sizeof(float) should be 16 for optimal 128-bit memory transactions.
-// constexpr int VEC_SIZE = 4; 
+// constexpr int VEC_SIZE = 4;
 // // Number of threads collaborating on a single token. A warp size is a good choice.
 // constexpr int THREADS_PER_TOKEN = 32;
 
@@ -307,7 +307,7 @@ __global__ void lse_reduce_kernel_cuda(
 //     // This can be further optimized for coalescing, but is a correct starting point.
 //     for (int k = 0; k < TOPK; ++k) {
 //         t_shared[tid * TOPK + k] = t_global_ptr[k * stride_tk];
-        
+
 //     }
 //     __syncthreads(); // Ensure all 't' indices are loaded before proceeding.
 
@@ -453,7 +453,7 @@ __global__ void lse_reduce_kernel_cuda(
 //     // This can be further optimized for coalescing, but is a correct starting point.
 //     for (int k = 0; k < TOPK; ++k) {
 //         t_shared[tid * TOPK + k] = t_global_ptr[k * stride_tk];
-        
+
 //     }
 //     __syncthreads(); // Ensure all 't' indices are loaded before proceeding.
 
@@ -485,27 +485,27 @@ __global__ void lse_reduce_kernel_cuda(
 //         if (t != -1) {
 //             // Triton's branching logic translated to CUDA
 //             int real_block_pos;
-            
+
 //             const __nv_bfloat16* o_tiles_ptr;
 //             const float* acc_o_scales_ptr;
-            
+
 //             int64_t stride_otb, stride_otn;
 //             int64_t stride_acc_b, stride_acc_n;
 
 //             if (t == 0) {
 //                 real_block_pos = 0;
-                
+
 //                 o_tiles_ptr = o_tiles_first_ptr;
 //                 acc_o_scales_ptr = acc_o_scales_first_ptr;
-                
+
 //                 stride_otb = stride_otfb; stride_otn = stride_otfn;
 //                 stride_acc_b = stride_acc_fb; stride_acc_n = stride_acc_fn;
 //             } else {
 //                 real_block_pos = t - 1;
-                
+
 //                 o_tiles_ptr = o_tiles_rest_ptr;
 //                 acc_o_scales_ptr = acc_o_scales_rest_ptr;
-                
+
 //                 stride_otb = stride_otrb; stride_otn = stride_otrn;
 //                 stride_acc_b = stride_acc_rb; stride_acc_n = stride_acc_rn;
 //             }
@@ -579,7 +579,7 @@ __global__ void o_reduce_kernel_cuda(
     const int pid_q = blockIdx.x; // Each block handles one token
 
     int pid_q_j;
-    
+
     for (int jj = 0; jj < num_qz_loop; ++jj) {
         pid_q_j = blockIdx.x * num_qz_loop + jj;
 
@@ -635,46 +635,46 @@ __global__ void o_reduce_kernel_cuda(
         for (int k = 0; k < TOPK; k += 4) {
             // Load 4 't' values at once
             int4 t_vec = *reinterpret_cast<const int4*>(&t_global_ptr[k * stride_tk]);
-            
+
             // Store vectorized 't' data to shared memory
             *reinterpret_cast<int4*>(&t_shared[tid * (TOPK + SMEM_PAD_INT_OR_FLOAT) + k]) = t_vec;
-            
+
             // Process real_token_index for each element in the vector
             int* t_elements = reinterpret_cast<int*>(&t_vec);
             for (int i = 0; i < 4; ++i) {
                 int current_t = t_elements[i];
                 if (current_t != -1) {
-                    real_token_index_shared[tid * (TOPK + SMEM_PAD_INT_OR_FLOAT) + k + i] = 
+                    real_token_index_shared[tid * (TOPK + SMEM_PAD_INT_OR_FLOAT) + k + i] =
                         token_index_mapping_ptr[current_t * stride_tim_b + pid_q_j * stride_tim_n];
                 } else {
                     real_token_index_shared[tid * (TOPK + SMEM_PAD_INT_OR_FLOAT) + k + i] = 0;
                 }
             }
         }
-    } 
+    }
     // Fallback to int2 vectorized loading (if TOPK is multiple of 2 but not 4)
     else if constexpr (TOPK % 2 == 0) {
         for (int k = 0; k < TOPK; k += 2) {
             // Load 2 't' values at once
             int2 t_vec = *reinterpret_cast<const int2*>(&t_global_ptr[k * stride_tk]);
-            
+
             // Store vectorized 't' data to shared memory
             *reinterpret_cast<int2*>(&t_shared[tid * (TOPK + SMEM_PAD_INT_OR_FLOAT) + k]) = t_vec;
-            
+
             // Process real_token_index for each element
             t_shared[tid * (TOPK + SMEM_PAD_INT_OR_FLOAT) + k] = t_vec.x;
             t_shared[tid * (TOPK + SMEM_PAD_INT_OR_FLOAT) + k + 1] = t_vec.y;
-            
+
             // Load 'real_token_index' only if 't' is valid
             if (t_vec.x != -1) {
-                real_token_index_shared[tid * (TOPK + SMEM_PAD_INT_OR_FLOAT) + k] = 
+                real_token_index_shared[tid * (TOPK + SMEM_PAD_INT_OR_FLOAT) + k] =
                     token_index_mapping_ptr[t_vec.x * stride_tim_b + pid_q_j * stride_tim_n];
             } else {
                 real_token_index_shared[tid * (TOPK + SMEM_PAD_INT_OR_FLOAT) + k] = 0;
             }
-            
+
             if (t_vec.y != -1) {
-                real_token_index_shared[tid * (TOPK + SMEM_PAD_INT_OR_FLOAT) + k + 1] = 
+                real_token_index_shared[tid * (TOPK + SMEM_PAD_INT_OR_FLOAT) + k + 1] =
                     token_index_mapping_ptr[t_vec.y * stride_tim_b + pid_q_j * stride_tim_n];
             } else {
                 real_token_index_shared[tid * (TOPK + SMEM_PAD_INT_OR_FLOAT) + k + 1] = 0;
@@ -727,18 +727,18 @@ __global__ void o_reduce_kernel_cuda(
     if constexpr (TILE_SIZE_D % 4 == 0) {
         for (int d_idx = 0; d_idx < TILE_SIZE_D; d_idx += 4) {
             int d = tid * TILE_SIZE_D + d_idx; // Global 'd' index
-            
+
             if (d + 3 < BLOCK_SIZE_D) {
                 // Load 4 consecutive bfloat16 values (8 bytes total)
                 float2 bf16_vec = *reinterpret_cast<const float2*>(&o_local_ptr[d]);
-                
+
                 // Extract and convert bfloat16 pairs to float pairs
                 __nv_bfloat162 bf16_pair1 = *reinterpret_cast<const __nv_bfloat162*>(&bf16_vec.x);
                 __nv_bfloat162 bf16_pair2 = *reinterpret_cast<const __nv_bfloat162*>(&bf16_vec.y);
-                
+
                 float2 float_pair1 = __bfloat1622float2(bf16_pair1);
                 float2 float_pair2 = __bfloat1622float2(bf16_pair2);
-                
+
                 // Store converted values
                 acc_o[d_idx] = float_pair1.x;
                 acc_o[d_idx + 1] = float_pair1.y;
@@ -785,24 +785,24 @@ __global__ void o_reduce_kernel_cuda(
 
             const __nv_bfloat16* o_tiles_ptr_pref;
             const float* acc_o_scales_ptr_pref;
-            
+
             int64_t stride_otb_pref, stride_otn_pref;
             int64_t stride_acc_b_pref, stride_acc_n_pref;
 
             if (t_pref == 0) {
                 real_block_pos_pref = 0;
-                
+
                 o_tiles_ptr_pref = o_tiles_first_ptr;
                 acc_o_scales_ptr_pref = acc_o_scales_first_ptr;
-                
+
                 stride_otb_pref = stride_otfb; stride_otn_pref = stride_otfn;
                 stride_acc_b_pref = stride_acc_fb; stride_acc_n_pref = stride_acc_fn;
             } else {
                 real_block_pos_pref = t_pref - 1;
-                
+
                 o_tiles_ptr_pref = o_tiles_rest_ptr;
                 acc_o_scales_ptr_pref = acc_o_scales_rest_ptr;
-                
+
                 stride_otb_pref = stride_otrb; stride_otn_pref = stride_otrn;
                 stride_acc_b_pref = stride_acc_rb; stride_acc_n_pref = stride_acc_rn;
             }
@@ -863,27 +863,27 @@ __global__ void o_reduce_kernel_cuda(
             if (t_next != -1) {
                 // Determine global pointers based on t_next and real_token_index_next
                 int real_block_pos_next;
-                
+
                 const __nv_bfloat16* o_tiles_ptr_next;
                 const float* acc_o_scales_ptr_next;
-                
+
                 int64_t stride_otb_next, stride_otn_next;
                 int64_t stride_acc_b_next, stride_acc_n_next;
 
                 if (t_next == 0) {
                     real_block_pos_next = 0;
-                    
+
                     o_tiles_ptr_next = o_tiles_first_ptr;
                     acc_o_scales_ptr_next = acc_o_scales_first_ptr;
-                    
+
                     stride_otb_next = stride_otfb; stride_otn_next = stride_otfn;
                     stride_acc_b_next = stride_acc_fb; stride_acc_n_next = stride_acc_fn;
                 } else {
                     real_block_pos_next = t_next - 1;
-                    
+
                     o_tiles_ptr_next = o_tiles_rest_ptr;
                     acc_o_scales_ptr_next = acc_o_scales_rest_ptr;
-                    
+
                     stride_otb_next = stride_otrb; stride_otn_next = stride_otrn;
                     stride_acc_b_next = stride_acc_rb; stride_acc_n_next = stride_acc_rn;
                 }
@@ -993,7 +993,7 @@ __global__ void o_reduce_kernel_cuda(
 //     // This can be further optimized for coalescing, but is a correct starting point.
 //     for (int k = 0; k < TOPK; ++k) {
 //         t_shared[tid * TOPK + k] = t_global_ptr[k * stride_tk];
-        
+
 //     }
 //     __syncthreads(); // Ensure all 't' indices are loaded before proceeding.
 

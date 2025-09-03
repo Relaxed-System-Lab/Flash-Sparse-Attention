@@ -23,13 +23,14 @@ from nsa_ref.ops.utils import get_num_warps_stages, is_hopper_gpu
 
 IS_HOPPER_GPU = is_hopper_gpu()
 
+import attention_cuda  # Import the compiled module
 # attention_wrapper.py
 import torch
-import attention_cuda  # Import the compiled module
+
 
 def qkv_kernel_cuda(
     q_tile,
-    k_tile, 
+    k_tile,
     v_tile,
     o_tiles,
     acc_o_scales,
@@ -54,7 +55,7 @@ def qkv_kernel_cuda(
     """
     # Ensure all tensors are on CUDA and contiguous
     device = q_tile.device
-    
+
     # Convert tensors to correct format if needed
     q_tile = q_tile.contiguous()
     k_tile = k_tile.contiguous()
@@ -101,7 +102,7 @@ def qkv_kernel_cuda(
         BLOCK_SIZE_K,
         BLOCK_SIZE_D
     )
-    
+
     return result
 
 
