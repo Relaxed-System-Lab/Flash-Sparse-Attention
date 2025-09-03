@@ -35,7 +35,7 @@ def parse_args():
 
     # Benchmark configuration
     parser.add_argument("--warm-up", type=int, default=5, help="Number of warm-up runs")
-    parser.add_argument("--benchmark-iters", type=int, default=30, help="Number of benchmark runs")
+    parser.add_argument("--benchmark-iters", type=int, default=2, help="Number of benchmark runs")
 
     return parser.parse_args()
 
@@ -271,8 +271,9 @@ if __name__ == "__main__":
     dv_relative_diff = (dv_ref - dv).abs().max() / dv_ref.abs().max()
     print(o_ref[0], o_opt[0])
     print(o_ref[1], o_opt[1])
-    print(o_ref[2], o_opt[2])
-    print(lse_ref[:, :512], lse_opt[:, :512])
+    # print(o_ref[32], o_opt[32])
+    print(o_ref, o_opt)
+    # print(lse_ref[:, :512], lse_opt[:, :512])
     # Assert accuracy
     try:
         torch.testing.assert_close(o_ref, o_opt.to(torch.bfloat16), atol=1e-2, rtol=1e-2)

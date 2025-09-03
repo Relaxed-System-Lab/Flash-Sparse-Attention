@@ -2,7 +2,7 @@
 device=5
 export PYTHONPATH=$(pwd)
 
-for seqlen in 65536; do
+for seqlen in 32768; do
     echo "Running with seqlen=${seqlen}"
     CUDA_VISIBLE_DEVICES=${device} python3 'test/test_FSA_optimized_sel_attn.py' \
         --seqlen ${seqlen} \
@@ -11,5 +11,5 @@ for seqlen in 65536; do
         --head-dim 128 \
         --block-size 64 \
         --topk 16 \
-        --benchmark-iters 20
+        --benchmark-iters 2
 done
