@@ -1,5 +1,5 @@
 # The used GPU device id
-device=5
+device=4
 export PYTHONPATH=$(pwd)
 
 for seqlen in 32768; do

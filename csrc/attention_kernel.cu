@@ -545,7 +545,7 @@ __global__ void lse_reduce_kernel_cuda(
 
 // Helper to determine padding for shared memory to avoid bank conflicts
 // For int/float, typically 32 banks. If size is a multiple of 32, add 1.
-#define SMEM_PAD_INT_OR_FLOAT ((WARP_SIZE % 32 == 0) ? 1 : 0)
+#define SMEM_PAD_INT_OR_FLOAT ((WARP_SIZE % 32 == 0) ? 4 : 0)
 
 template<int BLOCK_SIZE_D, int TOPK>
 __global__ void o_reduce_kernel_cuda(
@@ -563,6 +563,7 @@ __global__ void o_reduce_kernel_cuda(
     // Scalars
     int start_head_id,
     int total_len,
+    int num_qz_loop,
     // Strides
     int64_t stride_lse_n,
 
@@ -575,7 +576,12 @@ __global__ void o_reduce_kernel_cuda(
     int64_t stride_tim_b, int64_t stride_tim_n
 ) {
     const int tid = threadIdx.x; // 0 to WARP_SIZE-1
-    const int pid_q_j = blockIdx.x; // Each block handles one token
+    const int pid_q = blockIdx.x; // Each block handles one token
+
+    int pid_q_j;
+    
+    for (int jj = 0; jj < num_qz_loop; ++jj) {
+        pid_q_j = blockIdx.x * num_qz_loop + jj;
 
     if (pid_q_j >= total_len) {
         return;
@@ -592,18 +598,18 @@ __global__ void o_reduce_kernel_cuda(
     size_t offset_real_token_index_shared = offset_t_shared + sizeof(int) * WARP_SIZE * (TOPK + SMEM_PAD_INT_OR_FLOAT);
 
     // Two stages for pipelined data
-    size_t offset_m_ij_stage0 = offset_real_token_index_shared + sizeof(int) * WARP_SIZE * (TOPK + SMEM_PAD_INT_OR_FLOAT);
-    size_t offset_m_ij_stage1 = offset_m_ij_stage0 + sizeof(float) * WARP_SIZE; // One float per thread per stage
+    // size_t offset_m_ij_stage0 = offset_real_token_index_shared + sizeof(int) * WARP_SIZE * (TOPK + SMEM_PAD_INT_OR_FLOAT);
+    // size_t offset_m_ij_stage1 = offset_m_ij_stage0 + sizeof(float) * WARP_SIZE; // One float per thread per stage
 
-    size_t offset_l_ij_stage0 = offset_m_ij_stage1 + sizeof(float) * WARP_SIZE;
-    size_t offset_l_ij_stage1 = offset_l_ij_stage0 + sizeof(float) * WARP_SIZE;
+    // size_t offset_l_ij_stage0 = offset_m_ij_stage1 + sizeof(float) * WARP_SIZE;
+    // size_t offset_l_ij_stage1 = offset_l_ij_stage0 + sizeof(float) * WARP_SIZE;
 
     // BLOCK_SIZE_D elements for o_tiles. Each thread loads BLOCK_SIZE_D / WARP_SIZE.
     // Total size is BLOCK_SIZE_D * sizeof(__nv_bfloat16) * 2 stages
     // We need to ensure o_tiles_sh_stage0/1 are aligned for bf16 access.
     // Assuming BLOCK_SIZE_D is a multiple of WARP_SIZE for simplicity.
     // Padding here is for the entire BLOCK_SIZE_D if needed, not per-thread
-    size_t offset_o_tiles_stage0 = offset_l_ij_stage1 + sizeof(int) * WARP_SIZE;
+    size_t offset_o_tiles_stage0 = offset_real_token_index_shared + sizeof(int) * WARP_SIZE * (TOPK + SMEM_PAD_INT_OR_FLOAT);
     size_t offset_o_tiles_stage1 = offset_o_tiles_stage0 + sizeof(__nv_bfloat16) * BLOCK_SIZE_D;
 
     size_t offset_acc_o_scales_stage0 = offset_o_tiles_stage1 + sizeof(__nv_bfloat16) * BLOCK_SIZE_D;
@@ -620,41 +626,138 @@ __global__ void o_reduce_kernel_cuda(
 
 
     // ===================================================================================
-    // INITIAL LOAD: 't' and 'real_token_index' (not pipelined, loaded all at once)
+    // INITIAL LOAD: 't' and 'real_token_index' (vectorized version)
     // ===================================================================================
     const int* t_global_ptr = t_ptr + pid_q_j * stride_tn;
-    // Load all 't' and derived 'real_token_index' values for this token into shared memory
-    for (int k = 0; k < TOPK; ++k) {
-        // Load 't'
-        int current_t = t_global_ptr[k * stride_tk];
-        t_shared[tid * (TOPK + SMEM_PAD_INT_OR_FLOAT) + k] = current_t;
 
-        // Load 'real_token_index' only if 't' is valid
-        if (current_t != -1) {
-            real_token_index_shared[tid * (TOPK + SMEM_PAD_INT_OR_FLOAT) + k] = token_index_mapping_ptr[current_t * stride_tim_b + pid_q_j * stride_tim_n];
-        } else {
-            // Set a safe default if t is -1 to avoid invalid memory access later
-            real_token_index_shared[tid * (TOPK + SMEM_PAD_INT_OR_FLOAT) + k] = 0; // Or any sentinel value
+    // Vectorized loading for int4 (if TOPK is multiple of 4)
+    if constexpr (TOPK % 4 == 0) {
+        for (int k = 0; k < TOPK; k += 4) {
+            // Load 4 't' values at once
+            int4 t_vec = *reinterpret_cast<const int4*>(&t_global_ptr[k * stride_tk]);
+            
+            // Store vectorized 't' data to shared memory
+            *reinterpret_cast<int4*>(&t_shared[tid * (TOPK + SMEM_PAD_INT_OR_FLOAT) + k]) = t_vec;
+            
+            // Process real_token_index for each element in the vector
+            int* t_elements = reinterpret_cast<int*>(&t_vec);
+            for (int i = 0; i < 4; ++i) {
+                int current_t = t_elements[i];
+                if (current_t != -1) {
+                    real_token_index_shared[tid * (TOPK + SMEM_PAD_INT_OR_FLOAT) + k + i] = 
+                        token_index_mapping_ptr[current_t * stride_tim_b + pid_q_j * stride_tim_n];
+                } else {
+                    real_token_index_shared[tid * (TOPK + SMEM_PAD_INT_OR_FLOAT) + k + i] = 0;
+                }
+            }
+        }
+    } 
+    // Fallback to int2 vectorized loading (if TOPK is multiple of 2 but not 4)
+    else if constexpr (TOPK % 2 == 0) {
+        for (int k = 0; k < TOPK; k += 2) {
+            // Load 2 't' values at once
+            int2 t_vec = *reinterpret_cast<const int2*>(&t_global_ptr[k * stride_tk]);
+            
+            // Store vectorized 't' data to shared memory
+            *reinterpret_cast<int2*>(&t_shared[tid * (TOPK + SMEM_PAD_INT_OR_FLOAT) + k]) = t_vec;
+            
+            // Process real_token_index for each element
+            t_shared[tid * (TOPK + SMEM_PAD_INT_OR_FLOAT) + k] = t_vec.x;
+            t_shared[tid * (TOPK + SMEM_PAD_INT_OR_FLOAT) + k + 1] = t_vec.y;
+            
+            // Load 'real_token_index' only if 't' is valid
+            if (t_vec.x != -1) {
+                real_token_index_shared[tid * (TOPK + SMEM_PAD_INT_OR_FLOAT) + k] = 
+                    token_index_mapping_ptr[t_vec.x * stride_tim_b + pid_q_j * stride_tim_n];
+            } else {
+                real_token_index_shared[tid * (TOPK + SMEM_PAD_INT_OR_FLOAT) + k] = 0;
+            }
+            
+            if (t_vec.y != -1) {
+                real_token_index_shared[tid * (TOPK + SMEM_PAD_INT_OR_FLOAT) + k + 1] = 
+                    token_index_mapping_ptr[t_vec.y * stride_tim_b + pid_q_j * stride_tim_n];
+            } else {
+                real_token_index_shared[tid * (TOPK + SMEM_PAD_INT_OR_FLOAT) + k + 1] = 0;
+            }
         }
     }
+    // // ===================================================================================
+    // // INITIAL LOAD: 't' and 'real_token_index' (not pipelined, loaded all at once)
+    // // ===================================================================================
+    // const int* t_global_ptr = t_ptr + pid_q_j * stride_tn;
+    // // Load all 't' and derived 'real_token_index' values for this token into shared memory
+    // for (int k = 0; k < TOPK; ++k) {
+    //     // Load 't'
+    //     int current_t = t_global_ptr[k * stride_tk];
+    //     t_shared[tid * (TOPK + SMEM_PAD_INT_OR_FLOAT) + k] = current_t;
+
+    //     // Load 'real_token_index' only if 't' is valid
+    //     if (current_t != -1) {
+    //         real_token_index_shared[tid * (TOPK + SMEM_PAD_INT_OR_FLOAT) + k] = token_index_mapping_ptr[current_t * stride_tim_b + pid_q_j * stride_tim_n];
+    //     } else {
+    //         // Set a safe default if t is -1 to avoid invalid memory access later
+    //         real_token_index_shared[tid * (TOPK + SMEM_PAD_INT_OR_FLOAT) + k] = 0; // Or any sentinel value
+    //     }
+    // }
     __syncthreads(); // Ensure all 't' and 'real_token_index' are loaded
 
     // ===================================================================================
     // INITIALIZATION: Load initial 'o' and 'lse' state
     // ===================================================================================
     // Each thread handles a portion of BLOCK_SIZE_D
+    // constexpr int TILE_SIZE_D = BLOCK_SIZE_D / WARP_SIZE; // Assumes BLOCK_SIZE_D is multiple of WARP_SIZE
+    // float acc_o[TILE_SIZE_D];
+
+    // __nv_bfloat16* o_local_ptr = o_ptr + pid_q_j * stride_on;
+    // for (int d_idx = 0; d_idx < TILE_SIZE_D; ++d_idx) {
+    //     int d = tid * TILE_SIZE_D + d_idx; // Global 'd' index
+    //     if (d < BLOCK_SIZE_D) {
+    //         acc_o[d_idx] = __bfloat162float(o_local_ptr[d * stride_od]);
+    //     } else {
+    //         acc_o[d_idx] = 0.0f; // Should not happen if BLOCK_SIZE_D is multiple of WARP_SIZE
+    //     }
+    // }
+
     constexpr int TILE_SIZE_D = BLOCK_SIZE_D / WARP_SIZE; // Assumes BLOCK_SIZE_D is multiple of WARP_SIZE
     float acc_o[TILE_SIZE_D];
 
     __nv_bfloat16* o_local_ptr = o_ptr + pid_q_j * stride_on;
-    for (int d_idx = 0; d_idx < TILE_SIZE_D; ++d_idx) {
-        int d = tid * TILE_SIZE_D + d_idx; // Global 'd' index
-        if (d < BLOCK_SIZE_D) {
-            acc_o[d_idx] = __bfloat162float(o_local_ptr[d * stride_od]);
-        } else {
-            acc_o[d_idx] = 0.0f; // Should not happen if BLOCK_SIZE_D is multiple of WARP_SIZE
+
+    // Vectorized loading for bfloat16 (stride_od = 1, so elements are consecutive)
+    if constexpr (TILE_SIZE_D % 4 == 0) {
+        for (int d_idx = 0; d_idx < TILE_SIZE_D; d_idx += 4) {
+            int d = tid * TILE_SIZE_D + d_idx; // Global 'd' index
+            
+            if (d + 3 < BLOCK_SIZE_D) {
+                // Load 4 consecutive bfloat16 values (8 bytes total)
+                float2 bf16_vec = *reinterpret_cast<const float2*>(&o_local_ptr[d]);
+                
+                // Extract and convert bfloat16 pairs to float pairs
+                __nv_bfloat162 bf16_pair1 = *reinterpret_cast<const __nv_bfloat162*>(&bf16_vec.x);
+                __nv_bfloat162 bf16_pair2 = *reinterpret_cast<const __nv_bfloat162*>(&bf16_vec.y);
+                
+                float2 float_pair1 = __bfloat1622float2(bf16_pair1);
+                float2 float_pair2 = __bfloat1622float2(bf16_pair2);
+                
+                // Store converted values
+                acc_o[d_idx] = float_pair1.x;
+                acc_o[d_idx + 1] = float_pair1.y;
+                acc_o[d_idx + 2] = float_pair2.x;
+                acc_o[d_idx + 3] = float_pair2.y;
+            } else {
+                // Handle remaining elements individually (boundary case)
+                for (int i = 0; i < 4 && d_idx + i < TILE_SIZE_D; ++i) {
+                    int d_local = d + i;
+                    if (d_local < BLOCK_SIZE_D) {
+                        acc_o[d_idx + i] = __bfloat162float(o_local_ptr[d_local]);
+                    } else {
+                        acc_o[d_idx + i] = 0.0f;
+                    }
+                }
+            }
         }
     }
+
 
     float lse = lse_ptr[pid_q_j * stride_lse_n];
     const float m_ij_last = m_ij_last_ptr[pid_q_j];
@@ -789,6 +892,15 @@ __global__ void o_reduce_kernel_cuda(
                 const __nv_bfloat16* o_tiles_local_ptr_next = o_tiles_ptr_next + real_block_pos_next * stride_otb_next + real_token_index_next * stride_otn_next;
                 const float acc_o_scale_tile_next = acc_o_scales_ptr_next[real_block_pos_next * stride_acc_b_next + real_token_index_next * stride_acc_n_next];
 
+                // if constexpr (TILE_SIZE_D % 4 == 0) {
+                //     for (int d_idx = 0; d_idx < TILE_SIZE_D; d_idx += 4) {
+                //         int d = tid * TILE_SIZE_D + d_idx;
+                //         float2 vec = *reinterpret_cast<const float2*>(&o_tiles_local_ptr_next[d]);
+                //         *reinterpret_cast<float2*>(&o_tiles_sh_next_pref[d]) = vec;
+                //     }
+                // }
+
+
                 for (int d_idx = 0; d_idx < TILE_SIZE_D; ++d_idx) {
                     int d = tid * TILE_SIZE_D + d_idx;
                     o_tiles_sh_next_pref[d] = o_tiles_local_ptr_next[d * stride_otfd];
@@ -822,7 +934,7 @@ __global__ void o_reduce_kernel_cuda(
             o_local_ptr[d * stride_od] = __float2bfloat16_rn(acc_o[d_idx]);
         }
     }
-
+}
 }
 
 
@@ -1106,8 +1218,8 @@ void o_reduce_kernel_launcher(
     const int grid_z = num_heads; // One grid dimension for heads is common, but your triton code doesn't use it.
                                  // Let's stick to the Triton launch grid for now.
 
-    const int num_qz_loop = total_len; // This seems to be the full length
-    const dim3 grid( (total_len + 1 - 1) / 1, 1, 1);
+    const int num_qz_loop = 4; // This seems to be the full length
+    const dim3 grid( (total_len + num_qz_loop - 1) / num_qz_loop, 1, 1);
     const dim3 block(WARP_SIZE, 1, 1);
 
     // In your host-side code (before launching the kernel):
@@ -1125,14 +1237,7 @@ void o_reduce_kernel_launcher(
     size_t offset_t_shared = 0;
     size_t offset_real_token_index_shared = offset_t_shared + sizeof(int) * WARP_SIZE * (topk + SMEM_PAD_INT_OR_FLOAT);
 
-    size_t offset_m_ij_stage0 = offset_real_token_index_shared + sizeof(int) * WARP_SIZE * (topk + SMEM_PAD_INT_OR_FLOAT);
-    size_t offset_m_ij_stage1 = offset_m_ij_stage0 + sizeof(float) * WARP_SIZE;
-
-    size_t offset_l_ij_stage0 = offset_m_ij_stage1 + sizeof(float) * WARP_SIZE;
-    size_t offset_l_ij_stage1 = offset_l_ij_stage0 + sizeof(float) * WARP_SIZE;
-
-
-    size_t offset_o_tiles_stage0 = offset_l_ij_stage1 + sizeof(float) * WARP_SIZE;
+    size_t offset_o_tiles_stage0 = offset_real_token_index_shared + sizeof(int) * WARP_SIZE * (topk + SMEM_PAD_INT_OR_FLOAT);
     size_t offset_o_tiles_stage1 = offset_o_tiles_stage0 + sizeof(__nv_bfloat16) * BLOCK_SIZE_D;
 
     size_t offset_acc_o_scales_stage0 = offset_o_tiles_stage1 + sizeof(__nv_bfloat16) * BLOCK_SIZE_D;
@@ -1162,7 +1267,7 @@ void o_reduce_kernel_launcher(
                 reinterpret_cast<const __nv_bfloat16*>(o_tiles_rest.data_ptr()),
                 acc_o_scales_first.data_ptr<float>(), acc_o_scales_rest.data_ptr<float>(),
                 t.data_ptr<int>(), token_index_mapping.data_ptr<int>(),
-                start_head_id, total_len,
+                start_head_id, total_len, num_qz_loop,
                 lse.stride(1),
                 o.stride(0), o.stride(2),
                 o_tiles_first.stride(1), o_tiles_first.stride(2), o_tiles_first.stride(3),

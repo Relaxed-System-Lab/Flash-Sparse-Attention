@@ -1247,26 +1247,26 @@ def _topk_sparse_attention_fwd_opt_per_seq(
                 TOPK,
                 head_dim,
             )
-        # with cuda_timer("reduce kernel"):
-        #     reduce_output(
-        #         lse,
-        #         o,
-        #         o_tiles_first,
-        #         o_tiles_rest,
-        #         m_ij_tiles,
-        #         l_ij_first,
-        #         l_ij_rest,
-        #         m_ij_last,
-        #         acc_o_scales_first,
-        #         acc_o_scales_rest,
-        #         topk_idx_tile,
-        #         token_index_mapping,
-        #         h,
-        #         head_tile,
-        #         total_len,
-        #         TOPK,
-        #         head_dim,
-        #     )
+        with cuda_timer("reduce kernel"):
+            reduce_output(
+                lse.clone(),
+                o.clone(),
+                o_tiles_first,
+                o_tiles_rest,
+                m_ij_tiles,
+                l_ij_first,
+                l_ij_rest,
+                m_ij_last,
+                acc_o_scales_first,
+                acc_o_scales_rest,
+                topk_idx_tile,
+                token_index_mapping,
+                h,
+                head_tile,
+                total_len,
+                TOPK,
+                head_dim,
+            )
 
         o_full[:, h * head_tile: (h + 1) * head_tile] = o
         lse_full[h * head_tile: (h + 1) * head_tile] = lse
