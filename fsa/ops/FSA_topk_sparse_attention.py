@@ -848,7 +848,7 @@ def qkv_kernel(
         compute_tile_size * head_tile,
         triton.cdiv(cur_max_valid_tokens, BLOCK_SIZE_Q * num_q_blocks),
     )
-
+    
     forward_kernel_opt[grid_fwd](
         q_tile,
         k_tile,
@@ -1229,6 +1229,7 @@ def _topk_sparse_attention_fwd_opt_per_seq(
         from utils import cuda_timer
 
         with cuda_timer("reduce kernel cuda"):
+            
             reduce_output_cuda(
                 lse,
                 o,

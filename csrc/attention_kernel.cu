@@ -1218,7 +1218,7 @@ void o_reduce_kernel_launcher(
     const int grid_z = num_heads; // One grid dimension for heads is common, but your triton code doesn't use it.
                                  // Let's stick to the Triton launch grid for now.
 
-    const int num_qz_loop = 4; // This seems to be the full length
+    const int num_qz_loop = 8; // This seems to be the full length
     const dim3 grid( (total_len + num_qz_loop - 1) / num_qz_loop, 1, 1);
     const dim3 block(WARP_SIZE, 1, 1);
 
