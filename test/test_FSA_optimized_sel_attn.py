@@ -269,7 +269,10 @@ if __name__ == "__main__":
 
     dv_diff = (dv_ref - dv).abs().max()
     dv_relative_diff = (dv_ref - dv).abs().max() / dv_ref.abs().max()
-
+    print(o_ref[0], o_opt[0])
+    print(o_ref[1], o_opt[1])
+    print(o_ref[2], o_opt[2])
+    print(lse_ref[:, :512], lse_opt[:, :512])
     # Assert accuracy
     try:
         torch.testing.assert_close(o_ref, o_opt.to(torch.bfloat16), atol=1e-2, rtol=1e-2)

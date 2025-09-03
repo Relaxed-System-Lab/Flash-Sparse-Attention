@@ -1,8 +1,8 @@
 # The used GPU device id
-device=0
+device=5
 export PYTHONPATH=$(pwd)
 
-for seqlen in 8192 16384 32768 65536; do
+for seqlen in 65536; do
     echo "Running with seqlen=${seqlen}"
     CUDA_VISIBLE_DEVICES=${device} python3 'test/test_FSA_optimized_sel_attn.py' \
         --seqlen ${seqlen} \

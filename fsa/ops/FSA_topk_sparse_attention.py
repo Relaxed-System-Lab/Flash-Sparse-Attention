@@ -23,6 +23,87 @@ from nsa_ref.ops.utils import get_num_warps_stages, is_hopper_gpu
 
 IS_HOPPER_GPU = is_hopper_gpu()
 
+# attention_wrapper.py
+import torch
+import attention_cuda  # Import the compiled module
+
+def qkv_kernel_cuda(
+    q_tile,
+    k_tile, 
+    v_tile,
+    o_tiles,
+    acc_o_scales,
+    m_ij_tiles,
+    l_ij,
+    token_index_mapping,
+    valid_topk_idx_permuted_tile,  # This is selected_tokens
+    cur_valid_lens,                # This is valid_lens
+    cur_valid_start_indices,       # This is valid_start_indices
+    compute_min_block_id,          # This is min_block_id
+    cur_max_valid_tokens,
+    head_tile,                     # Not used directly, inferred from tensor shapes
+    compute_tile_size,             # Not used directly, inferred from tensor shapes
+    cu_seqlens_q,                  # Not used in current implementation
+    cu_seqlens_k,
+    head_dim,
+    sm_scale,
+    block_size                     # This maps to BLOCK_SIZE_Q, BLOCK_SIZE_K
+):
+    """
+    Launch the CUDA attention kernel with the same interface as Triton
+    """
+    # Ensure all tensors are on CUDA and contiguous
+    device = q_tile.device
+    
+    # Convert tensors to correct format if needed
+    q_tile = q_tile.contiguous()
+    k_tile = k_tile.contiguous()
+    v_tile = v_tile.contiguous()
+    o_tiles = o_tiles.contiguous()
+    acc_o_scales = acc_o_scales.contiguous()
+    m_ij_tiles = m_ij_tiles.contiguous()
+    l_ij = l_ij.contiguous()
+    token_index_mapping = token_index_mapping.contiguous()
+    valid_topk_idx_permuted_tile = valid_topk_idx_permuted_tile.contiguous()
+    cur_valid_lens = cur_valid_lens.view(-1).contiguous()
+    cur_valid_start_indices = cur_valid_start_indices.view(-1).contiguous().to(torch.int32)
+    cu_seqlens_k = cu_seqlens_k.contiguous()
+    num_q_blocks = 8
+    # assert False, f"{cur_valid_start_indices.dtype}, {cur_valid_lens.dtype}, {valid_topk_idx_permuted_tile.dtype}, {token_index_mapping.dtype}"
+    # Set block sizes (you can make these configurable)
+    BLOCK_SIZE_Q = 32
+    BLOCK_SIZE_K = block_size // 2
+    BLOCK_SIZE_D = 64
+    # BLOCK_SIZE_D = min(128, head_dim)  # Adjust based on shared memory constraints
+    grid_y = triton.cdiv(cur_max_valid_tokens, BLOCK_SIZE_Q * num_q_blocks)
+    # Launch the CUDA kernel
+    result = attention_cuda.forward_kernel_opt(
+        q_tile,
+        k_tile,
+        v_tile,
+        o_tiles,
+        acc_o_scales,
+        m_ij_tiles,
+        l_ij,
+        token_index_mapping,
+        valid_topk_idx_permuted_tile,
+        cur_valid_lens,
+        cur_valid_start_indices,
+        compute_tile_size,
+        cu_seqlens_q,
+        cu_seqlens_k,
+        compute_min_block_id,
+        cur_max_valid_tokens,
+        sm_scale,
+        num_q_blocks,
+        grid_y,
+        BLOCK_SIZE_Q,
+        BLOCK_SIZE_K,
+        BLOCK_SIZE_D
+    )
+    
+    return result
+
 
 @triton.jit
 def fused_fill_kernel(ptr_tile, ptr_m_i_cur_tiles, N, BLOCK_SIZE: tl.constexpr):
@@ -821,6 +902,64 @@ def qkv_kernel(
     )
 
 
+def reduce_output_cuda(
+    lse,
+    o,
+    o_tiles_first,
+    o_tiles_rest,
+    m_ij_tiles,
+    l_ij_first,
+    l_ij_rest,
+    m_ij_last,
+    acc_o_scales_first,
+    acc_o_scales_rest,
+    topk_idx_tile,
+    token_index_mapping,
+    h,
+    head_tile,
+    total_len,
+    TOPK,
+    head_dim,
+):
+    # update lse
+    attention_cuda.lse_reduce_kernel_launcher(
+        lse,
+        m_ij_tiles,
+        l_ij_first,
+        l_ij_rest,
+        m_ij_last,
+        o,
+        o_tiles_first,
+        o_tiles_rest,
+        acc_o_scales_first,
+        acc_o_scales_rest,
+        topk_idx_tile,
+        token_index_mapping,
+        h * head_tile,
+        total_len,
+        TOPK,
+    )
+
+    # update o
+    attention_cuda.o_reduce_kernel_launcher(
+        lse,
+        m_ij_tiles,
+        l_ij_first,
+        l_ij_rest,
+        m_ij_last,
+        o,
+        o_tiles_first,
+        o_tiles_rest,
+        acc_o_scales_first,
+        acc_o_scales_rest,
+        topk_idx_tile,
+        token_index_mapping,
+        h * head_tile,
+        total_len,
+        TOPK,
+    )
+
+
 def reduce_output(
     lse,
     o,
@@ -1086,26 +1225,48 @@ def _topk_sparse_attention_fwd_opt_per_seq(
                 sm_scale,
                 block_size,
             )
+        from utils import cuda_timer
 
-        reduce_output(
-            lse,
-            o,
-            o_tiles_first,
-            o_tiles_rest,
-            m_ij_tiles,
-            l_ij_first,
-            l_ij_rest,
-            m_ij_last,
-            acc_o_scales_first,
-            acc_o_scales_rest,
-            topk_idx_tile,
-            token_index_mapping,
-            h,
-            head_tile,
-            total_len,
-            TOPK,
-            head_dim,
-        )
+        with cuda_timer("reduce kernel cuda"):
+            reduce_output_cuda(
+                lse,
+                o,
+                o_tiles_first,
+                o_tiles_rest,
+                m_ij_tiles,
+                l_ij_first,
+                l_ij_rest,
+                m_ij_last,
+                acc_o_scales_first,
+                acc_o_scales_rest,
+                topk_idx_tile,
+                token_index_mapping,
+                h,
+                head_tile,
+                total_len,
+                TOPK,
+                head_dim,
+            )
+        # with cuda_timer("reduce kernel"):
+        #     reduce_output(
+        #         lse,
+        #         o,
+        #         o_tiles_first,
+        #         o_tiles_rest,
+        #         m_ij_tiles,
+        #         l_ij_first,
+        #         l_ij_rest,
+        #         m_ij_last,
+        #         acc_o_scales_first,
+        #         acc_o_scales_rest,
+        #         topk_idx_tile,
+        #         token_index_mapping,
+        #         h,
+        #         head_tile,
+        #         total_len,
+        #         TOPK,
+        #         head_dim,
+        #     )
 
         o_full[:, h * head_tile: (h + 1) * head_tile] = o
         lse_full[h * head_tile: (h + 1) * head_tile] = lse
