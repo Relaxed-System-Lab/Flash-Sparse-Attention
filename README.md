@@ -187,8 +187,6 @@ Please cite our [arXiv paper](https://arxiv.org/abs/2508.18224):
 }
 ```
 
-**Citation correction:** The [previous README citation](https://github.com/Relaxed-System-Lab/Flash-Sparse-Attention/blob/7ff144fd7ff485dc4220d439f31cc1708b64fef3/README.md#L174-L184) used the title "Flash Sparse Attention: More Efficient Natively Trainable Sparse Attention" and listed only Ran Yan, Youhe Jiang, and Binhang Yuan. It referred to the same paper, arXiv:2508.18224, but its title and author list were incorrect. The entry above matches the current arXiv record. This note and [issue #15](https://github.com/Relaxed-System-Lab/Flash-Sparse-Attention/issues/15) document the correction for readers who used the earlier citation.
-
 ## Acknowledgments
 
 NSA paper:
