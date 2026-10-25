@@ -136,7 +136,7 @@ class FlashSparseAttention(torch.nn.Module):
         gqa_group_size = num_q_heads // num_k_heads
 
         # TODO: fine-grained fall back mechanism will be integrated into kernels
-        # Match the documented fallback: use NSA for GQA group sizes >= 8.        if gqa_group_size < 8:
+        if gqa_group_size < 8:
             sparse_attn_output = FSA_topk_sparse_attention(
                 q, k, v, topk_idx, self.block_size, cu_seqlens, None
             )
